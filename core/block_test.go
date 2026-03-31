@@ -1,69 +1,48 @@
 package core
 
 import (
-	"bytes"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/smnaimcs/projectx/crypto"
 	"github.com/smnaimcs/projectx/types"
 	"github.com/stretchr/testify/assert"
 )
 
-func TestHeader_Encode_Decode(t *testing.T) {
+func randomBlock(height uint32) *Block {
 	h := &Header{
-		Version:   1,
-		PrevBlock: types.RandomHash(),
+		Version:       1,
+		PrevBlockHash: types.RandomHash(),
+		Height:        height,
 		Timestamp: time.Now().UnixNano(),
-		Height:    10,
-		Nonce:     99874,
+	}
+	tx := Transaction{
+		Data: []byte("hello world"),
 	}
 
-	buf := &bytes.Buffer{}
-	assert.Nil(t, h.EncodeBinary(buf))
-
-	hDecode := &Header{}
-	assert.Nil(t, hDecode.DecodeBinary(buf))
-
-	assert.Equal(t, h, hDecode)
-}
-
-func TestBlock_Encode_Decode(t *testing.T) {
-	b := &Block{
-		Header: Header{
-			Version:   1,
-			PrevBlock: types.RandomHash(),
-			Timestamp: time.Now().UnixNano(),
-			Height:    10,
-			Nonce:     99874,
-		},
-		Transactions: nil,
-	}
-
-	buf := &bytes.Buffer{}
-	assert.Nil(t, b.EncodeBinary(buf))
-
-	bDecode := &Block{}
-	assert.Nil(t, bDecode.DecodeBinary(buf))
-	assert.Equal(t, b, bDecode)
+	return NewBlock(h, []Transaction{tx})
 }
 
 func TestBlockHash(t *testing.T) {
-	b := &Block{
-		Header: Header{
-			Version:   1,
-			PrevBlock: types.RandomHash(),
-			Timestamp: time.Now().UnixNano(),
-			Height:    10,
-			Nonce:     99874,
-		},
-		Transactions: nil,
-	}
+	b := randomBlock(0)
+	fmt.Println(b.Hash(BlockHasher{}))
+}
 
-	assert.True(t, b.hash.IsZero())
-	fmt.Println(b.hash)
-	bHash := b.Hash()
+func TestSignBlock(t *testing.T) {
+	b := randomBlock(0)
+	privKey := crypto.GeneratePrivateKey()
+	assert.Nil(t, b.Sign(privKey))
+	assert.NotNil(t, b.Signature)
+}
 
-	assert.False(t, bHash.IsZero())
-	fmt.Println(bHash)
+func TestVerifyBlock(t *testing.T) {
+	b := randomBlock(0)
+	privKey := crypto.GeneratePrivateKey()
+	assert.Nil(t, b.Sign(privKey))
+
+	assert.Nil(t, b.Verify())
+	anotherPrivKey := crypto.GeneratePrivateKey()
+	b.Validator = anotherPrivKey.PublicKey()
+	assert.NotNil(t, b.Verify())
 }
