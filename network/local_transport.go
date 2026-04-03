@@ -1,6 +1,7 @@
 package network
 
 import (
+	"bytes"
 	"fmt"
 	"sync"
 )
@@ -11,7 +12,7 @@ type LocalTransport struct {
 	lock      sync.RWMutex
 	peers     map[NetAddr]*LocalTransport
 }
-	
+
 func NewLocalTransport(addr NetAddr) Transport {
 	return &LocalTransport{
 		addr:      addr,
@@ -44,7 +45,7 @@ func (t *LocalTransport) SendMessage(to NetAddr, payload []byte) error {
 
 	peer.consumeCh <- RPC{
 		From:    t.addr,
-		Payload: payload,
+		Payload: bytes.NewReader(payload),
 	}
 
 	return nil
