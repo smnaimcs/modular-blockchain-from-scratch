@@ -1,6 +1,7 @@
 package network
 
 import (
+	"bytes"
 	"fmt"
 	"time"
 
@@ -12,16 +13,16 @@ import (
 var defaultBlockTime = 5 * time.Second
 
 type ServerOpts struct {
-	RPCHandler
-	Transports []Transport
-	PrivateKey *crypto.PrivateKey
-	BlockTime  time.Duration
+	RPCDecodeFunc RPCDecodeFunc
+	Transports    []Transport
+	PrivateKey    *crypto.PrivateKey
+	BlockTime     time.Duration
 }
 
 type Server struct {
 	ServerOpts
+	RPCProcessor
 	mempool     *TxPool
-	blockTime   time.Duration
 	isValidator bool
 	rpcCh       chan RPC
 	quitCh      chan struct{}
@@ -31,17 +32,21 @@ func NewServer(opts ServerOpts) *Server {
 	if opts.BlockTime == time.Duration(0) {
 		opts.BlockTime = defaultBlockTime
 	}
+
+	if opts.RPCDecodeFunc == nil {
+		opts.RPCDecodeFunc = DefaultRPCDecodeFunc
+	}
+
 	s := &Server{
 		ServerOpts:  opts,
 		mempool:     NewTxPool(),
-		blockTime:   opts.BlockTime,
 		isValidator: opts.PrivateKey != nil,
 		rpcCh:       make(chan RPC),
 		quitCh:      make(chan struct{}),
 	}
 
-	if opts.RPCHandler == nil {
-		s.RPCHandler = NewDefaultRPCHandler(s)
+	if s.RPCProcessor == nil {
+		s.RPCProcessor = s
 	}
 
 	return s
@@ -49,13 +54,18 @@ func NewServer(opts ServerOpts) *Server {
 
 func (s *Server) Start() {
 	s.initTransports()
-	ticker := time.NewTicker(s.blockTime)
+	ticker := time.NewTicker(s.BlockTime)
 
 free:
 	for {
 		select {
 		case rpc := <-s.rpcCh:
-			if err := s.RPCHandler.HandleRPC(rpc); err != nil {
+			msg, err := s.RPCDecodeFunc(rpc)
+			if err != nil {
+				logrus.Error(err)
+			}
+
+			if err := s.RPCProcessor.ProcessMessage(msg); err != nil {
 				logrus.Error(err)
 			}
 		case <-s.quitCh:
@@ -68,7 +78,37 @@ free:
 	fmt.Println("Server shutdown")
 }
 
-func (s *Server) ProcessTransaction(from NetAddr, tx *core.Transaction) error {
+func (s *Server) ProcessMessage(msg *DecodedMessage) error {
+	switch t := msg.Data.(type) {
+	case *core.Transaction:
+		return s.processTransaction(t)
+	}
+
+	return nil
+}
+
+func (s *Server) broadcast(msg []byte) error {
+	for _, tr := range s.Transports {
+		if err := tr.Broadcast(msg); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *Server) broadcastTx(tx *core.Transaction) error {
+	buf := &bytes.Buffer{}
+	if err := tx.Encode(core.NewGobTxEncoder(buf)); err != nil {
+		return err
+	}
+
+	msg := NewMessage(MessageTypeTx, buf.Bytes())
+
+	return s.broadcast(msg.Bytes())
+}
+
+func (s *Server) processTransaction(tx *core.Transaction) error {
 	hash := tx.Hash(core.TxHasher{})
 
 	if s.mempool.Has(hash) {
@@ -86,9 +126,11 @@ func (s *Server) ProcessTransaction(from NetAddr, tx *core.Transaction) error {
 	tx.SetFirstSeen(time.Now().UnixNano())
 
 	logrus.WithFields(logrus.Fields{
-		"hash": hash,
+		"hash":   hash,
 		"length": s.mempool.Len(),
 	}).Info("adding new tx to the mempool")
+
+	go s.broadcastTx(tx)
 
 	return s.mempool.Add(tx)
 }
